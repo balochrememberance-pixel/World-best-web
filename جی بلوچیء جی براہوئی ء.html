@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Offline AI Assistant — Acode (Ready)</title>
+<style>
+  body{font-family:system-ui,Arial;margin:0;background:#f4f6f8;color:#0b1220}
+  header{padding:12px;text-align:center;background:#0b1220;color:#fff}
+  #app{max-width:900px;margin:12px auto;padding:12px}
+  #chat{height:52vh;overflow:auto;border-radius:10px;background:#fff;padding:10px;box-shadow:0 2px 6px rgba(0,0,0,0.08)}
+  .msg{max-width:78%;padding:8px 12px;margin:6px;border-radius:10px;word-break:break-word}
+  .user{margin-left:auto;background:#0b84ff;color:#fff}
+  .ai{margin-right:auto;background:#eef2f7;color:#0b1220}
+  #editor{margin-top:10px;border-radius:8px;background:#fff;padding:8px;min-height:120px;outline:none;font-family:monospace}
+  #controls{display:flex;gap:8px;margin-top:10px;align-items:center}
+  input[type="text"]{flex:1;padding:10px;border-radius:8px;border:1px solid #dfe6ee}
+  button{padding:10px 12px;border-radius:8px;border:none;background:#0b84ff;color:#fff;cursor:pointer}
+  .muted{background:#f0f3f6;color:#556}
+  pre{white-space:pre-wrap;background:#0b1220;color:#dff7d8;padding:10px;border-radius:8px;overflow:auto}
+  #status{margin-top:8px;font-size:13px;color:#334}
+  .small{font-size:13px;color:#445}
+</style>
+</head>
+<body>
+<header>
+  <strong>📱 Offline AI Assistant — Acode Ready</strong><br><span class="small">Chat • Code • Voice • Local LLM loader</span>
+</header>
+
+<div id="app">
+  <div id="chat"></div>
+
+  <div id="editor" contenteditable="true" spellcheck="false">// Write code here (editable)</div>
+
+  <div id="controls">
+    <input id="prompt" placeholder="Type prompt or use mic..." />
+    <button id="btnSend">Send</button>
+    <button id="btnVoice">🎤</button>
+    <button id="btnLoad" class="muted">Load local model</button>
+    <button id="btnUseLocal" class="muted">Use offline model</button>
+  </div>
+
+  <div id="status" class="small">Status: <span id="statusText">Local model not loaded (placeholder enabled)</span></div>
+
+  <h4 class="small">Instructions / Notes</h4>
+  <div class="small" style="background:#fff;padding:8px;border-radius:8px">
+    <ul>
+      <li>To enable *real offline AI*, place a WASM/JS LLM runtime file and a compatible model file (e.g. <code>model.gguf</code>) in the same Acode folder as this HTML.</li>
+      <li>Runtime example names (you may find builds like): <code>llama_wasm.js</code>, <code>llama_wasm.wasm</code> or a project-specific bundle (depends on the runtime you choose).</li>
+      <li>After adding runtime+model, click <strong>Load local model</strong>. If loaded successfully, click <strong>Use offline model</strong> to route generation to local model.</li>
+      <li>If you need help fetching a runtime and model, tell me (I will list exact download steps for your device).</li>
+    </ul>
+  </div>
+
+  <pre id="debug" style="display:none"></pre>
+</div>
+
+<script>
+/* ============================
+   Offline AI Assistant (single-file)
+   - UI + placeholder offline AI
+   - Local LLM loader hooks: tries to load "./llama_wasm.js" and "./model.gguf" (or other names)
+   - When runtime is present, it calls runtime.generate(prompt) (see runtime API contract below)
+   ============================ */
+
+const chat = document.getElementById('chat');
+const promptEl = document.getElementById('prompt');
+const editor = document.getElementById('editor');
+const btnSend = document.getElementById('btnSend');
+const btnVoice = document.getElementById('btnVoice');
+const btnLoad  = document.getElementById('btnLoad');
+const btnUseLocal = document.getElementById('btnUseLocal');
+const statusText = document.getElementById('statusText');
+const debug = document.getElementById('debug');
+
+let localRuntime = null;   // Will hold loaded runtime object
+let localModelReady = false;
+let useLocal = false;
+
+// UI helpers
+function addMsg(text, who){
+  const d = document.createElement('div');
+  d.className = 'msg ' + (who === 'user' ? 'user' : 'ai');
+  d.innerText = text;
+  chat.appendChild(d);
+  chat.scrollTop = chat.scrollHeight;
+}
+
+function setStatus(s){ statusText.innerText = s; }
+function showDebug(t){ debug.style.display='block'; debug.innerText = t; }
+
+// ====== Placeholder offline AI (simple deterministic) ======
+function placeholderAI(prompt){
+  const p = prompt.toLowerCase();
+  if(p.includes('hello')||p.includes('hi')) return 'Hi — offline assistant here!';
+  if(p.includes('explain')) return 'This is a simple offline explanation from placeholder model.';
+  if(p.includes('code')) return 'function demo(){ console.log(\"offline demo\"); }';
+  if(p.includes('react')) return 'const App = ()=>(<div>Hello Offline React</div>)';
+  return 'Offline placeholder understood: ' + prompt;
+}
+
+// ====== Generation entrypoint ======
+async function generate(prompt){
+  // If user chose to use local runtime and it's ready, call it
+  if(useLocal && localRuntime && typeof localRuntime.generate === 'function' && localModelReady){
+    setStatus('Generating with local model...');
+    try{
+      // runtime.generate should return a string. The exact API depends on runtime you later add.
+      const out = await localRuntime.generate(prompt, { onProgress: (chunk)=> {
+        // optional progress hook: append partial outputs (not implemented visual streaming to keep simple)
+        // console.log('progress',chunk);
+      }});
+      setStatus('Local generation done');
+      return out;
+    } catch(e){
+      setStatus('Local model error: ' + String(e));
+      console.error(e);
+      return 'Local model error: ' + String(e);
+    }
+  }
+
+  // fallback to placeholder offline AI
+  return placeholderAI(prompt);
+}
+
+// ====== Send flow ======
+btnSend.onclick = async ()=>{
+  const p = promptEl.value.trim();
+  if(!p) return;
+  addMsg(p, 'user');
+  promptEl.value = '';
+  setStatus('Thinking...');
+  const out = await generate(p);
+  addMsg(out, 'ai');
+  setStatus(useLocal ? 'Local ready' : 'Placeholder active');
+};
+
+// ====== Voice input (Web Speech) ======
+btnVoice.onclick = ()=>{
+  if(!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)){
+    alert('SpeechRecognition not supported in this browser/device');
+    return;
+  }
+  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const r = new Rec();
+  r.lang = 'en-US';
+  r.interimResults = false;
+  r.onresult = (ev)=> {
+    const text = ev.results[0][0].transcript;
+    promptEl.value = text;
+  };
+  r.onend = ()=> { /* auto-send optionally */ };
+  r.onerror = (e)=> console.log('rec error', e);
+  r.start();
+};
+
+// ================= Local runtime loader (hooks) =================
+// The design: if you place a JS runtime file named "llama_wasm.js" (or similar) next to this HTML,
+// the file should expose a global factory function `createLocalRuntime()` which returns an object
+// with at least:
+//   - async loadModel(modelPath)  => loads model binary and prepares runtime
+//   - async generate(prompt, opts) => returns string output (or streams with onProgress)
+// Minimal contract is used so this page can support many different wasm runtimes by adapting them
+//
+// Example (pseudo) runtime that should exist in llama_wasm.js:
+//
+// window.createLocalRuntime = async function(){ 
+//   return {
+//     loadModel: async (path) => { /* fetch and init */ },
+//     generate: async (prompt, opts) => { /* run inference and return text */ }
+//   };
+// };
+//
+// Note: different runtimes may expect different model file formats (gguf, ggml, quantized .bin, etc).
+// Place model file (e.g., model.gguf or model.bin) in same folder and click `Load local model`.
+// ================================================================
+
+async function tryLoadLocalRuntime(){
+  setStatus('Trying to load local runtime script...');
+  // typical file names you might put in folder:
+  const candidates = ['llama_wasm.js','llama_wasm_bundle.js','local_llm_runtime.js'];
+  let loaded = false;
+  for(const name of candidates){
+    try{
+      // Try dynamic import relative to same folder as HTML
+      // In Acode, the HTML and JS are in same folder; dynamic import should work if file exists.
+      // We wrap in try/catch because file may not be present.
+      const scriptUrl = './' + name;
+      // fetch to check existence (avoids console error on import)
+      const resp = await fetch(scriptUrl, {method:'HEAD'});
+      if(!resp.ok) continue;
+      // import as module
+      const module = await import(scriptUrl);
+      if(module && module.createLocalRuntime){
+        localRuntime = await module.createLocalRuntime();
+        setStatus('Runtime loaded: ' + name);
+        loaded = true;
+        break;
+      } else if(window.createLocalRuntime){
+        // some runtimes attach a global instead of module export
+        localRuntime = await window.createLocalRuntime();
+        setStatus('Global runtime factory found: ' + name);
+        loaded = true;
+        break;
+      } else {
+        // Try global createLocalRuntime (maybe the script executed and set global)
+        if(window.createLocalRuntime){
+          localRuntime = await window.createLocalRuntime();
+          setStatus('Global runtime factory used');
+          loaded = true;
+          break;
+        }
+      }
+    } catch(e){
+      // ignore and try next candidate
+      console.log('load attempt', name, e);
+    }
+  }
+
+  if(!loaded){
+    setStatus('No local runtime script found. Put a runtime (e.g., llama_wasm.js) in same folder.');
+    return false;
+  }
+
+  // If runtime loaded, try load model file(s)
+  // Try common model file names:
+  const modelCandidates = ['model.gguf','model.bin','model.ggml','ggml-model-q4_0.bin','model.q4_0.bin'];
+  let modelLoaded = false;
+  for(const mname of modelCandidates){
+    try{
+      // The runtime is responsible for fetching the model path; here we just test existence by HEAD
+      const resp = await fetch('./' + mname, {method:'HEAD'});
+      if(!resp.ok) continue;
+      setStatus('Model file found: ' + mname + ' — asking runtime to load');
+      // runtime.loadModel should accept a relative path like './model.gguf'
+      await localRuntime.loadModel('./' + mname);
+      localModelReady = true;
+      setStatus('Model loaded: ' + mname);
+      modelLoaded = true;
+      break;
+    } catch(e){
+      console.log('model load fail', mname, e);
+    }
+  }
+
+  if(!modelLoaded){
+    setStatus('Runtime loaded but no model file found in folder. Put model.gguf (or compatible) in same folder.');
+    return true; // runtime exists but model missing
+  }
+
+  return true;
+}
+
+// Button actions
+btnLoad.onclick = async ()=>{
+  setStatus('Loading local runtime...');
+  const ok = await tryLoadLocalRuntime();
+  if(ok){
+    if(localModelReady){
+      setStatus('Local runtime + model ready. Click "Use offline model" to enable.');
+    } else {
+      setStatus('Runtime loaded but model not ready — add model file and click Load again.');
+    }
+  }
+};
+
+btnUseLocal.onclick = ()=>{
+  if(!localRuntime){
+    alert('Local runtime not loaded. Click Load local model first.');
+    return;
+  }
+  if(!localModelReady){
+    if(!confirm('Local runtime loaded but model not loaded. Continue to use runtime (may fail)?')){ return; }
+  }
+  useLocal = true;
+  setStatus('Using local model (when available). If not available, fallback to placeholder.');
+};
+
+// ----- Optional: allow clicking code in editor to send as prompt -----
+editor.addEventListener('dblclick', ()=> {
+  const code = editor.innerText.trim();
+  if(!code) return;
+  promptEl.value = 'Please explain the following code:\\n' + code;
+});
+
+// ======= END main script =======
+setStatus('Ready — placeholder active. To enable real local LLM, add runtime + model and click Load local model.');
+</script>
+</body>
+</html>
